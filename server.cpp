@@ -22,27 +22,27 @@ class distributor
 {
         public:
                 void subscribe(boost::shared_ptr<session_interface> session)
-		{
-			std::cout << "session added to distributor" << std::endl;	
-			session_.insert(session);
+				{
+					std::cout << "session added to distributor" << std::endl;	
+					session_.insert(session);
                 }
 
                 void unsubscribe(boost::shared_ptr<session_interface> session)
                 {
-			std::cout << "session deleted from distibutor" << std::endl;
-			session_.erase(session);
+					std::cout << "session deleted from distibutor" << std::endl;
+					session_.erase(session);
                 }
 
                 void distribute(char* data)
                 {
-			std::cout << "DISTRIBUTE!" << std::endl;
-			std::for_each(session_.begin(), session_.end(),
+					std::cout << "DISTRIBUTE!" << std::endl;
+					std::for_each(session_.begin(), session_.end(),
         				boost::bind(&session_interface::deliver, _1, boost::ref(data)));
                 }
-
+			
         private:
-		std::set<boost::shared_ptr<session_interface>> session_;
-                std::deque<int> messages;
+			std::set<boost::shared_ptr<session_interface>> session_;
+            std::deque<int> messages;
 };
 
 class session : public session_interface, public boost::enable_shared_from_this<session>
@@ -89,16 +89,17 @@ class session : public session_interface, public boost::enable_shared_from_this<
 		{
 			std::cout << "handle_read" << std::endl;
 			distributor_.distribute(data_);
+			memset(data_, 0, sizeof(data_));
 			if (!error)
 			{
-				boost::asio::async_write(socket_,
-						boost::asio::buffer(data_, bytes_transferred),
-						boost::bind(&session::handle_write, shared_from_this(),
-						boost::asio::placeholders::error));
+			socket_.async_read_some(boost::asio::buffer(data_, max_length),
+					boost::bind(&session::handle_read, shared_from_this(),
+						boost::asio::placeholders::error,
+						boost::asio::placeholders::bytes_transferred));
 			}
 			else
 			{
-				distributor_.unsubscribe(shared_from_this());		
+				distributor_.unsubscribe(shared_from_this());	
 			}
 		}
 
@@ -130,7 +131,7 @@ class tcp_server
 		tcp_server(boost::asio::io_service& io_service) : io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), 13))
 		{
 			start_accept();
-			std::cout << "START ACCEPT!" << std::endl;
+			std::cout << "START ACCEPT! Ipv4 on port 13" << std::endl;
 		}
 	private:
 	void start_accept()
