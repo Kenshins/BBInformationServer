@@ -80,7 +80,11 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void deliver_done()
 		{
-
+			memset(data_, 0, sizeof(data_));
+			socket_.async_read_some(boost::asio::buffer(data_, max_length),
+					boost::bind(&session::handle_read, shared_from_this(),
+						boost::asio::placeholders::error,
+						boost::asio::placeholders::bytes_transferred));
 		}
 
 	private:
@@ -89,34 +93,8 @@ class session : public session_interface, public boost::enable_shared_from_this<
 		{
 			std::cout << "handle_read" << std::endl;
 			distributor_.distribute(data_);
-			memset(data_, 0, sizeof(data_));
-			if (!error)
-			{
-			socket_.async_read_some(boost::asio::buffer(data_, max_length),
-					boost::bind(&session::handle_read, shared_from_this(),
-						boost::asio::placeholders::error,
-						boost::asio::placeholders::bytes_transferred));
-			}
-			else
-			{
-				distributor_.unsubscribe(shared_from_this());	
-			}
-		}
-
-		void handle_write(const boost::system::error_code& error)
-		{
-			std::cout << "handle_write" << std::endl;
-			if (!error)
-			{
-				socket_.async_read_some(boost::asio::buffer(data_, max_length),
-						boost::bind(&session::handle_read, shared_from_this(),
-							boost::asio::placeholders::error,
-							boost::asio::placeholders::bytes_transferred));
-			}
-			else
-			{
+			if (error)
 				distributor_.unsubscribe(shared_from_this());
-			}
 		}
 
 	tcp::socket socket_;
