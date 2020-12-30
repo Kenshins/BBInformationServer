@@ -1,5 +1,5 @@
 CPP = g++
-CFLAGS = -lboost_thread -lboost_system
+CFLAGS = -lboost_thread -lboost_system -lboost_program_options
 
 BBInformationServer : server.o
 	$(CPP) -o BBInformationServer server.o $(CFLAGS)
