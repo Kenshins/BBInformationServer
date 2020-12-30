@@ -13,6 +13,8 @@
 #include <boost/uuid/uuid_io.hpp> 
 
 namespace po = boost::program_options;
+namespace posix = boost::asio::posix;
+
 using boost::asio::ip::tcp;
 
 static int session_counter = 0;
@@ -127,11 +129,11 @@ class session : public session_interface, public boost::enable_shared_from_this<
 class tcp_server
 {
 	public:
-		tcp_server(boost::asio::io_service& io_service, int port) : io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port))
+		tcp_server(boost::asio::io_service& io_service, int port) : io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port)),input_(io_service, ::dup(STDIN_FILENO)), input_buffer_(100)
 		{
 			start_accept();
 			std::cout << "Start accept! Ipv4 on port 13" << std::endl;
-			//io_service.post(boost::bind(&tcp_server::distribute_temp, this));
+			start_read_keyboard();
 		}
 	private:
 	void start_accept()
@@ -142,6 +144,14 @@ class tcp_server
 				boost::asio::placeholders::error));
 	}
 
+	void start_read_keyboard()
+	{
+			boost::asio::async_read_until(input_, input_buffer_, '\n',
+										  boost::bind(&tcp_server::handle_keyboard_input, this,
+													  boost::asio::placeholders::error,
+													  boost::asio::placeholders::bytes_transferred));
+	}
+
 	void handle_accept(boost::shared_ptr<session> new_session,
 			const boost::system::error_code& error)
 	{
@@ -149,29 +159,41 @@ class tcp_server
 		{
 			new_session->start();
 		}
-	
 	start_accept();
 	}
 
-	void distribute_temp()
+	void handle_keyboard_input(const boost::system::error_code& error,
+				size_t bytes_transferred)
 	{
-		char test[1024] = "Test\n";
-		distributor_.distribute(test);
-		sleep(1);
-		io_service_.post(boost::bind(&tcp_server::distribute_temp, this));
+		if (!error)
+		{
+		boost::asio::streambuf::const_buffers_type bufs = input_buffer_.data();
+		std::string str(boost::asio::buffers_begin(bufs),
+                boost::asio::buffers_begin(bufs) + bytes_transferred);
+		std::cout << "Keyboard input: " << str;
+		// This does nothing now. For future CLI commands to server.
+		input_buffer_.consume(bytes_transferred);
+		start_read_keyboard();
+		}
+		else
+		{
+			std::cout << "Keyboard input error, closing server" << std::endl;
+		}
 	}
 
 	boost::asio::io_service& io_service_;
 	tcp::acceptor acceptor_;
 	distributor distributor_;
+	posix::stream_descriptor input_;
+  	boost::asio::streambuf input_buffer_;
 };
 
 int main(int argument_count, char* argument_vector[])
 {
 	try
 	{
-		po::options_description description("Allowed options");
-		description.add_options()("help", "produce help message")("port", po::value<int>(), "set server port");
+		po::options_description description("Usage: BBInformationServer [Options] --port arg \nAllowed options");
+		description.add_options()("help,h", "Produce help message")("port,p", po::value<int>(), "Set server port");
 
 		po::variables_map map_of_arguments;
 		po::store(po::parse_command_line(argument_count, argument_vector, description), map_of_arguments);
@@ -185,12 +207,12 @@ int main(int argument_count, char* argument_vector[])
 
 		if (map_of_arguments.count("port"))
 		{
-			std::cout << "Port was set to "
+			std::cout << "Port was set to: "
 				 << map_of_arguments["port"].as<int>() << ".\n";
 		}
 		else
 		{
-			std::cout << "Port was not set.\n";
+			std::cout << "Port was not set. Example: BBInformationServer --port 13\n";
 			return 0;
 		}
 
