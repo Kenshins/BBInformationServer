@@ -1,11 +1,8 @@
 CPP = g++
-CFLAGS = -lboost_thread -lboost_system -lboost_program_options
+CFLAGS = -lboost_thread -lboost_system -lboost_program_options -lprotobuf -pthread
 
-BBInformationServer : server.o
-	$(CPP) -o BBInformationServer server.o $(CFLAGS)
-
-server.o : server.cpp
-	$(CPP) -c server.cpp
+BBInformationServer : server.cpp
+	$(CPP) -Wall -pedantic -g -o BBInformationServer server.cpp chat_message.pb.cc $(CFLAGS)
 
 clean:
 	rm server.o

@@ -12,16 +12,18 @@
 #include <deque>
 #include <mutex>
 #include <memory>
+#include <iostream>
 
 #include "message.hpp"
+#include "chat_message.pb.h"
 
 class message_queue {
     mutable std::mutex mutex_;
-    std::deque<std::shared_ptr<message>> message_deque_;
+    std::deque<message> message_deque_;
 
 public:
 
-    void push_back(std::shared_ptr<message> msg)
+    void push_back(message msg)
     {
         std::lock_guard<std::mutex> l(mutex_);
         message_deque_.push_back(msg);
@@ -33,12 +35,37 @@ public:
         message_deque_.pop_front();
     }
 
-    char * get_front_data()
+    message get_front_data()
     {
         std::lock_guard<std::mutex> l(mutex_);
-        return message_deque_.front()->data();
+        return message_deque_.front();
     }
 
+    size_t get_size()
+    {
+        return message_deque_.size();
+    }
+
+    bool get_empty()
+    {
+        return message_deque_.empty();
+    }
+
+    void print_length_of_items()
+    {
+        for (message m : message_deque_) { std::cout << m.length() <<  " "; }
+    }
+
+    void print_content()
+    {
+        for (message m : message_deque_) 
+        { 
+            std::string s = m.body();
+            chat_message c;
+			c.ParseFromString(s);
+			std::cout << c.message_content() << std::endl; 
+        }
+    }
 };
 
 #endif // MESSAGE_QUEUE_HPP

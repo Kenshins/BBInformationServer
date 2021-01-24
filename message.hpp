@@ -63,22 +63,12 @@ public:
 
   bool decode_header()
   {
-    using namespace std; // For strncat and atoi.
     char header[header_length + 1] = "";
-    for (int i = 0; i < 4; ++i)
-    			std::cout << std::hex << (int)data_[i] << " ";
-			std::cout << std::endl;
-    //strncat(header, data_, header_length);
     memcpy(header, data_, header_length);
-    for (int i = 0; i < 4; ++i)
-    			std::cout << std::hex << (int)header[i] << " ";
-			std::cout << std::endl;
-    //body_length_ = atoi(header);
     body_length_ = size_t((unsigned char)(header[0]) << 24 |
           (unsigned char)(header[1]) << 16 |
           (unsigned char)(header[2]) << 8 |
           (unsigned char)(header[3]));
-    std::cout << std::dec << "body_length: " << body_length_ << std::endl;
     if (body_length_ > max_body_length)
     {
       body_length_ = 0;
@@ -89,10 +79,13 @@ public:
 
   void encode_header()
   {
-    using namespace std; // For sprintf and memcpy.
     char header[header_length + 1] = "";
-    sprintf(header, "%4d", static_cast<int>(body_length_));
-    memcpy(data_, header, header_length);
+    header[0] = (body_length_ >> 24) & 0xFF;
+    header[1] = (body_length_ >> 16) & 0xFF;
+    header[2] = (body_length_ >> 8) & 0xFF;
+    header[3] = body_length_ & 0xFF;
+
+    std::memcpy(data_, header, header_length);
   }
 
   void reset()

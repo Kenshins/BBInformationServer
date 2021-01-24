@@ -10,6 +10,7 @@
 #define SERVER_CPP
 
 //#define BOOST_ASIO_ENABLE_HANDLER_TRACKING
+#define GOOGLE_PROTOBUF_VERIFY_VERSION
 
 #include <cstdlib>
 #include <iostream>
@@ -28,6 +29,7 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/deadline_timer.hpp>
 
+#include "chat_message.pb.h"
 #include "message.hpp"
 #include "message_queue.hpp"
 
@@ -42,8 +44,7 @@ class session_interface
 {
 public:
   virtual ~session_interface() {}
-  virtual void deliver(char* deliver_data) = 0;
-  virtual void deliver_msg(message msg) = 0;
+  virtual void deliver_msg(std::shared_ptr<message> deliver_data) = 0;
 };
 
 class distributor
@@ -63,18 +64,17 @@ class distributor
 					--session_counter;
                 }
 
-                void distribute(char* data)
-                {
-					//std::cout << "Distribute!" << std::endl;
-					std::for_each(session_.begin(), session_.end(),
-        				boost::bind(&session_interface::deliver, _1, boost::ref(data)));
-                }
-
-				void distribute(message msg)
+				void distribute(message_queue &out_messages)
 				{
 					//std::cout << "Distribute!" << std::endl;
-					std::for_each(session_.begin(), session_.end(),
-								  boost::bind(&session_interface::deliver_msg, _1, boost::ref(msg)));
+
+					while(!out_messages.get_empty())
+					{
+						std::shared_ptr<message> shared_message = std::make_shared<message>(std::move(out_messages.get_front_data()));
+						std::for_each(session_.begin(), session_.end(),
+									  boost::bind(&session_interface::deliver_msg, _1, boost::ref(shared_message)));
+						out_messages.pop_front();
+					}
 				}
 			
         private:
@@ -86,7 +86,7 @@ class session : public session_interface, public boost::enable_shared_from_this<
 {
 	public:
 		session(boost::asio::io_service& io_service, distributor& dist_service, boost::uuids::uuid uuid)
-			: socket_(io_service), distributor_(dist_service), uuid_(uuid)
+			: strand_(io_service), socket_(io_service), distributor_(dist_service), uuid_(uuid)
 		{
 		}
 
@@ -100,64 +100,26 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			std::cout << "Session starting uuid: "  << uuid_ << std::endl;
 			distributor_.subscribe(shared_from_this());
 			boost::asio::async_read(socket_,boost::asio::buffer(read_msg_.data(), message::header_length),
-					boost::bind(&session::handle_read_header, shared_from_this(),
-						boost::asio::placeholders::error));
-			// message - Handle read header
-			//socket_.async_read_some(boost::asio::buffer(data_, max_length),
-			//		boost::bind(&session::handle_read, shared_from_this(),
-			//			boost::asio::placeholders::error,
-			//			boost::asio::placeholders::bytes_transferred));
+					strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
+						boost::asio::placeholders::error)));
 			session_counter++;
 		}
-		
-		 void deliver(char* deliver_data)
-		 {
-		 //std::cout << "Deliver " << uuid_ << std::endl;
-		 // message - Deliver message
-		 	size_t bytes_transferred = 0;
-			boost::asio::async_write(socket_,
-                                                boost::asio::buffer(deliver_data, max_length),
-                                                boost::bind(&session::deliver_done, shared_from_this(),
-												boost::asio::placeholders::error));
-		}
 
-		void deliver_msg(message deliver_data)
+		void deliver_msg(std::shared_ptr<message> deliver_data)
 		 {
 			//std::cout << "Deliver " << uuid_ << std::endl;
-
 		 	size_t bytes_transferred = 0;
 			boost::asio::async_write(socket_,
-                                                boost::asio::buffer(deliver_data.data(), max_length),
-                                                boost::bind(&session::deliver_done, shared_from_this(),
-												boost::asio::placeholders::error));
+                                                boost::asio::buffer(deliver_data->data(), deliver_data->length()),
+                                                strand_.wrap(boost::bind(&session::deliver_done, shared_from_this(),
+												boost::asio::placeholders::error)));
 		}
 
 	private:
-		void handle_read(const boost::system::error_code& error,
-				size_t bytes_transferred)
-		{
-			if(!error)
-			{
-			//std::cout << "Handle_read " << uuid_ << "bytes transfered " << bytes_transferred <<std::endl;
-			distributor_.distribute(data_);
-			memset(data_, 0, sizeof(data_));
-			socket_.async_read_some(boost::asio::buffer(data_, max_length),
-									boost::bind(&session::handle_read, shared_from_this(),
-												boost::asio::placeholders::error,
-												boost::asio::placeholders::bytes_transferred));
-			}
-			else
-			{
-				distributor_.unsubscribe(shared_from_this());
-			}
-		}
 
 		void handle_read_header(const boost::system::error_code &error)
 		{
-			std::cout << "handle_read_header" << std::endl;
-			for (int i = 0; i < 4; ++i)
-    			std::cout << std::hex << (int)read_msg_.data()[i] << " ";
-			std::cout << std::endl;
+			//std::cout << "handle_read_header" << std::endl;
 			if (!error && read_msg_.decode_header())
 			{
 				boost::asio::async_read(socket_,
@@ -173,12 +135,14 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void handle_read_body(const boost::system::error_code &error)
 		{
-			std::cout << "handle_read_body" << std::endl;
+			//std::cout << "handle_read_body" << std::endl;
 			if (!error)
 			{
-				for (int i = 4; i < 10; ++i)
-    				std::cout << std::hex << (int)read_msg_.data()[i] << " ";
-				std::cout << std::endl;
+				std::string s = read_msg_.body();
+				read_chat_message_.ParseFromString(s);
+				//std::cout << read_chat_message_.message_content() << std::endl;
+				out_messages_.push_back(read_msg_);
+				distributor_.distribute(out_messages_);
 				read_msg_.reset();
 				boost::asio::async_read(socket_,
 										boost::asio::buffer(read_msg_.data(), message::header_length),
@@ -187,7 +151,7 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			}
 			else
 			{
-				//do_close();
+				distributor_.unsubscribe(shared_from_this());
 			}
 		}
 
@@ -203,6 +167,7 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			}
 		}
 
+	chat_message read_chat_message_;
 	tcp::socket socket_;
 	enum { max_length = 1024 };
 	char data_[max_length] = {0};
@@ -210,6 +175,7 @@ class session : public session_interface, public boost::enable_shared_from_this<
 	message_queue out_messages_;
 	distributor& distributor_;
 	boost::uuids::uuid uuid_;
+	boost::asio::strand strand_;
 };
 
 class tcp_server
@@ -224,7 +190,7 @@ class tcp_server
 	private:
 	void start_accept()
 	{
-	boost::shared_ptr<session> new_session( new session(io_service_, distributor_, boost::uuids::random_generator()()));
+	boost::shared_ptr<session> new_session(new session(io_service_, distributor_, boost::uuids::random_generator()()));
 	acceptor_.async_accept(new_session->socket(),
 			boost::bind(&tcp_server::handle_accept, this, new_session,
 				boost::asio::placeholders::error));
@@ -272,7 +238,6 @@ class tcp_server
 	distributor distributor_;
 	posix::stream_descriptor input_;
   	boost::asio::streambuf input_buffer_;
-
 	boost::asio::strand strand_;
 };
 
@@ -305,21 +270,20 @@ int main(int argument_count, char* argument_vector[])
 		}
 
 		std::cout << "Starting server!" << std::endl;
-		//boost::thread_group worker_threads;
+		boost::thread_group worker_threads;
 		boost::asio::io_service io_service;
-		//boost::asio::io_context io_context; -- should be used in the future
 		boost::shared_ptr<tcp_server> server(new tcp_server(io_service, map_of_arguments["port"].as<int>()));
-		io_service.run(); // if not running thread pool
+		//io_service.run(); // if not running thread pool
 
-		//for (unsigned int i = 0; i < 4; ++i)
-		//{
-		//	worker_threads.create_thread(
-		//		[&]() {
-		//			io_service.run();
-		//		});
-		//}
+		for (unsigned int i = 0; i < 4; ++i)
+		{
+			worker_threads.create_thread(
+				[&]() {
+					io_service.run();
+				});
+		}
 
-		//worker_threads.join_all();
+		worker_threads.join_all();
 	}
 	catch (std::exception& e)
 	{
