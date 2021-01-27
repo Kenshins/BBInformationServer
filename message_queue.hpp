@@ -51,6 +51,11 @@ public:
         return message_deque_.empty();
     }
 
+    void clear()
+    {
+        message_deque_.clear();
+    }
+
     void print_length_of_items()
     {
         for (message m : message_deque_) { std::cout << m.length() <<  " "; }

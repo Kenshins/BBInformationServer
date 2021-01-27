@@ -17,6 +17,9 @@
 #include <deque>
 #include <set>
 #include <iomanip>
+#include <atomic> 
+#include <mutex>
+
 #include <boost/thread/thread.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/enable_shared_from_this.hpp>
@@ -45,6 +48,7 @@ class session_interface
 public:
   virtual ~session_interface() {}
   virtual void deliver_msg(std::shared_ptr<message> deliver_data) = 0;
+  virtual boost::uuids::uuid print_uuid() = 0;
 };
 
 class distributor
@@ -52,34 +56,46 @@ class distributor
         public:
                 void subscribe(boost::shared_ptr<session_interface> session)
 				{
-					std::cout << "Session added to distributor" << std::endl;	
+					std::lock_guard<std::mutex> l(mutex_);
 					session_.insert(session);
-					++session_counter;
+					std::cout << "Session added to distributor: " << session.get() << std::endl;	
+					session_counter++;
+					std::cout << "Session count: " << session_counter << std::endl;
                 }
 
                 void unsubscribe(boost::shared_ptr<session_interface> session)
                 {
-					std::cout << "Session deleted from distributor" << std::endl;
-					session_.erase(session);
-					--session_counter;
+					std::lock_guard<std::mutex> l(mutex_);
+					if (session_.erase(session) > 0)
+					{
+						std::cout << "Session deleted from distributor: " << session.get() << std::endl;
+						session_counter--;
+						std::cout << "Session count: " << session_counter << std::endl;
+					}
                 }
 
 				void distribute(message_queue &out_messages)
 				{
+					std::lock_guard<std::mutex> l(mutex_);
 					//std::cout << "Distribute!" << std::endl;
 
 					while(!out_messages.get_empty())
 					{
 						std::shared_ptr<message> shared_message = std::make_shared<message>(std::move(out_messages.get_front_data()));
 						std::for_each(session_.begin(), session_.end(),
-									  boost::bind(&session_interface::deliver_msg, _1, boost::ref(shared_message)));
+										boost::bind(&session_interface::deliver_msg, _1, boost::ref(shared_message)));
 						out_messages.pop_front();
 					}
+				}
+
+				void print_sessions()
+				{
+					std::for_each(session_.begin(), session_.end(), [](const boost::shared_ptr<session_interface> n) { std::cout << "print_sessions: " <<n->print_uuid() << std::endl; });
 				}
 			
         private:
 			std::set<boost::shared_ptr<session_interface>> session_;
-            //std::deque<int> messages;
+			mutable std::mutex mutex_;
 };
 
 class session : public session_interface, public boost::enable_shared_from_this<session>
@@ -102,7 +118,6 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			boost::asio::async_read(socket_,boost::asio::buffer(read_msg_.data(), message::header_length),
 					strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
 						boost::asio::placeholders::error)));
-			session_counter++;
 		}
 
 		void deliver_msg(std::shared_ptr<message> deliver_data)
@@ -119,6 +134,8 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void handle_read_header(const boost::system::error_code &error)
 		{
+			if (is_session_active)
+			{
 			//std::cout << "handle_read_header" << std::endl;
 			if (!error && read_msg_.decode_header())
 			{
@@ -129,17 +146,29 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			}
 			else
 			{
-				//do_close();
+				std::cout << "handle_reader_header error in uuid:  " << uuid_ << std::endl;
+				try
+				{
+					is_session_active = false;
+					distributor_.unsubscribe(shared_from_this());
+				}
+				catch (...)
+				{
+					std::cout << "Exception" << '\n';
+				}
+			}
 			}
 		}
 
 		void handle_read_body(const boost::system::error_code &error)
 		{
+			if (is_session_active)
+			{
 			//std::cout << "handle_read_body" << std::endl;
 			if (!error)
 			{
-				std::string s = read_msg_.body();
-				read_chat_message_.ParseFromString(s);
+				//std::string s = read_msg_.body();
+				//read_chat_message_.ParseFromString(s);
 				//std::cout << read_chat_message_.message_content() << std::endl;
 				out_messages_.push_back(read_msg_);
 				distributor_.distribute(out_messages_);
@@ -151,22 +180,50 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			}
 			else
 			{
-				distributor_.unsubscribe(shared_from_this());
+				std::cout << "handle_reader_body error in uuid:  " << uuid_ << std::endl;
+				try
+				{
+					is_session_active = false;
+					distributor_.unsubscribe(shared_from_this());
+				}
+				catch (...)
+				{
+					std::cout << "Exception" << '\n';
+				}
+			}
 			}
 		}
 
 		void deliver_done(const boost::system::error_code& error)
 		{
+			if (is_session_active)
+			{
 			if(!error)
 			{
 				//std::cout << "Deliver done! " << uuid_ << std::endl;
 			}
 			else
 			{
-				distributor_.unsubscribe(shared_from_this());
+				std::cout << "deliver_done error in uuid:  " << uuid_ << std::endl;
+				try
+				{
+					is_session_active = false;
+					distributor_.unsubscribe(shared_from_this());
+				}
+				catch (...)
+				{
+					std::cout << "Exception" << '\n';
+				}
+			}
 			}
 		}
 
+		boost::uuids::uuid print_uuid()
+		{
+			return uuid_;
+		}
+
+	bool is_session_active = true;
 	chat_message read_chat_message_;
 	tcp::socket socket_;
 	enum { max_length = 1024 };
