@@ -19,11 +19,11 @@
 
 class message_queue {
     mutable std::mutex mutex_;
-    std::deque<message> message_deque_;
+    std::deque<std::shared_ptr<message>> message_deque_;
 
 public:
 
-    void push_back(message msg)
+    void push_back(std::shared_ptr<message> msg)
     {
         std::lock_guard<std::mutex> l(mutex_);
         message_deque_.push_back(msg);
@@ -35,7 +35,7 @@ public:
         message_deque_.pop_front();
     }
 
-    message get_front_data()
+    std::shared_ptr<message> get_front_data()
     {
         std::lock_guard<std::mutex> l(mutex_);
         return message_deque_.front();
@@ -43,29 +43,34 @@ public:
 
     size_t get_size()
     {
+        std::lock_guard<std::mutex> l(mutex_);
         return message_deque_.size();
     }
 
     bool get_empty()
     {
+        std::lock_guard<std::mutex> l(mutex_);
         return message_deque_.empty();
     }
 
     void clear()
     {
+        std::lock_guard<std::mutex> l(mutex_);
         message_deque_.clear();
     }
 
     void print_length_of_items()
     {
-        for (message m : message_deque_) { std::cout << m.length() <<  " "; }
+        std::lock_guard<std::mutex> l(mutex_);
+        for (std::shared_ptr<message> m : message_deque_) { std::cout << m->length() <<  " "; }
     }
 
     void print_content()
     {
-        for (message m : message_deque_) 
+        std::lock_guard<std::mutex> l(mutex_);
+        for (std::shared_ptr<message> m : message_deque_) 
         { 
-            std::string s = m.body();
+            std::string s = m->body();
             chat_message c;
 			c.ParseFromString(s);
 			std::cout << c.message_content() << std::endl; 

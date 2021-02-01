@@ -20,6 +20,7 @@
 #include <atomic> 
 #include <mutex>
 
+#include <boost/chrono.hpp>
 #include <boost/thread/thread.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/enable_shared_from_this.hpp>
@@ -41,14 +42,13 @@ namespace posix = boost::asio::posix;
 
 using boost::asio::ip::tcp;
 
-static int session_counter = 0;
-
 class session_interface
 {
 public:
   virtual ~session_interface() {}
-  virtual void deliver_msg(std::shared_ptr<message> deliver_data) = 0;
+  virtual void deliver_msg(std::shared_ptr<message> message) = 0;
   virtual boost::uuids::uuid print_uuid() = 0;
+  virtual void stop() = 0;
 };
 
 class distributor
@@ -58,44 +58,25 @@ class distributor
 				{
 					std::lock_guard<std::mutex> l(mutex_);
 					session_.insert(session);
-					std::cout << "Session added to distributor: " << session.get() << std::endl;	
-					session_counter++;
-					std::cout << "Session count: " << session_counter << std::endl;
                 }
 
                 void unsubscribe(boost::shared_ptr<session_interface> session)
                 {
 					std::lock_guard<std::mutex> l(mutex_);
-					if (session_.erase(session) > 0)
-					{
-						std::cout << "Session deleted from distributor: " << session.get() << std::endl;
-						session_counter--;
-						std::cout << "Session count: " << session_counter << std::endl;
-					}
+					session_.erase(session);
+					session->stop();
                 }
 
-				void distribute(message_queue &out_messages)
+				void distribute(std::shared_ptr<message> m)
 				{
 					std::lock_guard<std::mutex> l(mutex_);
-					//std::cout << "Distribute!" << std::endl;
-
-					while(!out_messages.get_empty())
-					{
-						std::shared_ptr<message> shared_message = std::make_shared<message>(std::move(out_messages.get_front_data()));
-						std::for_each(session_.begin(), session_.end(),
-										boost::bind(&session_interface::deliver_msg, _1, boost::ref(shared_message)));
-						out_messages.pop_front();
-					}
-				}
-
-				void print_sessions()
-				{
-					std::for_each(session_.begin(), session_.end(), [](const boost::shared_ptr<session_interface> n) { std::cout << "print_sessions: " <<n->print_uuid() << std::endl; });
+					std::for_each(session_.begin(), session_.end(),
+									boost::bind(&session_interface::deliver_msg, _1, boost::ref(m)));
 				}
 			
         private:
+		    mutable std::mutex mutex_;
 			std::set<boost::shared_ptr<session_interface>> session_;
-			mutable std::mutex mutex_;
 };
 
 class session : public session_interface, public boost::enable_shared_from_this<session>
@@ -111,19 +92,24 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			return socket_;
 		}
 
+		void stop()
+		{
+  			socket_.close();
+		}
+
 		void start()
 		{
-			std::cout << "Session starting uuid: "  << uuid_ << std::endl;
+			//std::cout << "Session starting uuid: "  << uuid_ << std::endl;
 			distributor_.subscribe(shared_from_this());
 			boost::asio::async_read(socket_,boost::asio::buffer(read_msg_.data(), message::header_length),
 					strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
 						boost::asio::placeholders::error)));
 		}
 
+		//void deliver_msg(std::shared_ptr<message> deliver_data)
 		void deliver_msg(std::shared_ptr<message> deliver_data)
 		 {
-			//std::cout << "Deliver " << uuid_ << std::endl;
-		 	size_t bytes_transferred = 0;
+			//std::cout << "Deliver " << deliver_data << std::endl;
 			boost::asio::async_write(socket_,
                                                 boost::asio::buffer(deliver_data->data(), deliver_data->length()),
                                                 strand_.wrap(boost::bind(&session::deliver_done, shared_from_this(),
@@ -134,87 +120,58 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void handle_read_header(const boost::system::error_code &error)
 		{
-			if (is_session_active)
-			{
 			//std::cout << "handle_read_header" << std::endl;
-			if (!error && read_msg_.decode_header())
+			if (!error)
 			{
+				read_msg_.decode_header();
 				boost::asio::async_read(socket_,
 										boost::asio::buffer(read_msg_.body(), read_msg_.body_length()),
-										boost::bind(&session::handle_read_body, this,
-													boost::asio::placeholders::error));
+										strand_.wrap(boost::bind(&session::handle_read_body, shared_from_this(),
+													boost::asio::placeholders::error)));
 			}
 			else
 			{
-				std::cout << "handle_reader_header error in uuid:  " << uuid_ << std::endl;
-				try
-				{
-					is_session_active = false;
-					distributor_.unsubscribe(shared_from_this());
-				}
-				catch (...)
-				{
-					std::cout << "Exception" << '\n';
-				}
-			}
+				distributor_.unsubscribe(shared_from_this());
+				//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
 			}
 		}
 
 		void handle_read_body(const boost::system::error_code &error)
 		{
-			if (is_session_active)
-			{
 			//std::cout << "handle_read_body" << std::endl;
 			if (!error)
 			{
 				//std::string s = read_msg_.body();
 				//read_chat_message_.ParseFromString(s);
 				//std::cout << read_chat_message_.message_content() << std::endl;
-				out_messages_.push_back(read_msg_);
-				distributor_.distribute(out_messages_);
+				std::shared_ptr<message> shared_message = std::make_shared<message>(std::move(read_msg_));	
+				//out_messages_.push_back(shared_message);
+				distributor_.distribute(shared_message);
 				read_msg_.reset();
 				boost::asio::async_read(socket_,
 										boost::asio::buffer(read_msg_.data(), message::header_length),
-										boost::bind(&session::handle_read_header, this,
-													boost::asio::placeholders::error));
+										strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
+													boost::asio::placeholders::error)));
 			}
 			else
 			{
-				std::cout << "handle_reader_body error in uuid:  " << uuid_ << std::endl;
-				try
-				{
-					is_session_active = false;
-					distributor_.unsubscribe(shared_from_this());
-				}
-				catch (...)
-				{
-					std::cout << "Exception" << '\n';
-				}
-			}
+
+				distributor_.unsubscribe(shared_from_this());
+				//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
+				
 			}
 		}
 
 		void deliver_done(const boost::system::error_code& error)
 		{
-			if (is_session_active)
-			{
 			if(!error)
 			{
 				//std::cout << "Deliver done! " << uuid_ << std::endl;
 			}
 			else
 			{
-				std::cout << "deliver_done error in uuid:  " << uuid_ << std::endl;
-				try
-				{
-					is_session_active = false;
 					distributor_.unsubscribe(shared_from_this());
-				}
-				catch (...)
-				{
-					std::cout << "Exception" << '\n';
-				}
-			}
+					//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
 			}
 		}
 
@@ -223,26 +180,23 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			return uuid_;
 		}
 
-	bool is_session_active = true;
+	boost::asio::strand strand_;
 	chat_message read_chat_message_;
 	tcp::socket socket_;
 	enum { max_length = 1024 };
 	char data_[max_length] = {0};
 	message read_msg_;
-	message_queue out_messages_;
 	distributor& distributor_;
 	boost::uuids::uuid uuid_;
-	boost::asio::strand strand_;
 };
 
 class tcp_server
 {
 	public:
-		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port)),input_(io_service, ::dup(STDIN_FILENO)), input_buffer_(100)
+		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port))
 		{
 			start_accept();
-			std::cout << "Start accept! Ipv4 on port 13" << std::endl;
-			start_read_keyboard();
+			std::cout << "Start accept! Ipv4 on port: " << port << std::endl;
 		}
 	private:
 	void start_accept()
@@ -251,14 +205,6 @@ class tcp_server
 	acceptor_.async_accept(new_session->socket(),
 			boost::bind(&tcp_server::handle_accept, this, new_session,
 				boost::asio::placeholders::error));
-	}
-
-	void start_read_keyboard()
-	{
-			boost::asio::async_read_until(input_, input_buffer_, '\n',
-										  strand_.wrap(boost::bind(&tcp_server::handle_keyboard_input, this,
-													  boost::asio::placeholders::error,
-													  boost::asio::placeholders::bytes_transferred)));
 	}
 
 	void handle_accept(boost::shared_ptr<session> new_session,
@@ -271,31 +217,11 @@ class tcp_server
 	start_accept();
 	}
 
-	void handle_keyboard_input(const boost::system::error_code& error,
-				size_t bytes_transferred)
-	{
-		if (!error)
-		{
-		boost::asio::streambuf::const_buffers_type bufs = input_buffer_.data();
-		std::string str(boost::asio::buffers_begin(bufs),
-                boost::asio::buffers_begin(bufs) + bytes_transferred);
-		std::cout << "Keyboard input: " << str;
-		// This does nothing now. For future CLI commands to server.
-		input_buffer_.consume(bytes_transferred);
-		start_read_keyboard();
-		}
-		else
-		{
-			std::cout << "Keyboard input error, closing server" << std::endl;
-		}
-	}
-
+	boost::asio::strand strand_;
 	boost::asio::io_service& io_service_;
 	tcp::acceptor acceptor_;
 	distributor distributor_;
-	posix::stream_descriptor input_;
   	boost::asio::streambuf input_buffer_;
-	boost::asio::strand strand_;
 };
 
 int main(int argument_count, char* argument_vector[])
