@@ -32,6 +32,12 @@
 #include <boost/asio.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/deadline_timer.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/core.hpp>
+#include <boost/log/expressions.hpp>
+
+#include <azmq/socket.hpp>
 
 #include "chat_message.pb.h"
 #include "message.hpp"
@@ -39,22 +45,49 @@
 
 namespace po = boost::program_options;
 namespace posix = boost::asio::posix;
+namespace keywords = boost::log::keywords;
+namespace logging = boost::log;
 
 using boost::asio::ip::tcp;
+
 
 class session_interface
 {
 public:
   virtual ~session_interface() {}
   virtual void deliver_msg(std::shared_ptr<message> message) = 0;
+  
   virtual boost::uuids::uuid print_uuid() = 0;
   virtual void stop() = 0;
 };
 
-class distributor
+class distributor : public boost::enable_shared_from_this<distributor>
 {
         public:
-                void subscribe(boost::shared_ptr<session_interface> session)
+
+				distributor(boost::asio::io_service& io_service) : subscriber_(io_service), io_service_(io_service)
+				{
+					start();
+				}
+
+				void start()
+				{
+					subscriber_.connect("tcp://localhost:5555");
+					//subscriber_.connect("tcp://192.168.55.112:5556");
+					//subscriber_.connect("tcp://192.168.55.201:7721");
+					subscriber_.set_option(azmq::socket::subscribe("hello"));
+
+					//auto size = subscriber_.receive(boost::asio::buffer(sub_buf_));
+
+					//BOOST_LOG_TRIVIAL(info) << "size:" << size << std::endl;
+
+					subscriber_.async_receive(boost::asio::buffer(data_, 1024), boost::bind(&distributor::subscriber_read, this,
+																						   boost::asio::placeholders::error));
+					//azmq::pub_socket publisher(io_service_);
+					//publisher.bind("ipc://nasdaq-feed");
+				}
+
+				void subscribe(boost::shared_ptr<session_interface> session)
 				{
 					std::lock_guard<std::mutex> l(mutex_);
 					session_.insert(session);
@@ -71,10 +104,29 @@ class distributor
 				{
 					std::lock_guard<std::mutex> l(mutex_);
 					std::for_each(session_.begin(), session_.end(),
-									boost::bind(&session_interface::deliver_msg, _1, boost::ref(m)));
+									boost::bind(&session_interface::deliver_msg, _1, m));
 				}
 			
         private:
+
+			void subscriber_read(const boost::system::error_code &error)
+			{
+				if (!error)
+				{
+					BOOST_LOG_TRIVIAL(info) << "subscriber_read" << std::endl;
+					subscriber_.async_receive(boost::asio::buffer(data_, 1024), boost::bind(&distributor::subscriber_read, this,
+																						   boost::asio::placeholders::error));
+				}
+				else
+				{
+					BOOST_LOG_TRIVIAL(info) << "subscriber_read" << std::endl;
+				}
+			}
+
+			std::array<char, 256> sub_buf_;
+			azmq::sub_socket subscriber_;
+			char data_[1024] = {0};
+			boost::asio::io_service& io_service_;
 		    mutable std::mutex mutex_;
 			std::set<boost::shared_ptr<session_interface>> session_;
 };
@@ -99,17 +151,15 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void start()
 		{
-			//std::cout << "Session starting uuid: "  << uuid_ << std::endl;
+			BOOST_LOG_TRIVIAL(info) << "Session starting uuid: "  << uuid_ << std::endl;
 			distributor_.subscribe(shared_from_this());
 			boost::asio::async_read(socket_,boost::asio::buffer(read_msg_.data(), message::header_length),
 					strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
 						boost::asio::placeholders::error)));
 		}
 
-		//void deliver_msg(std::shared_ptr<message> deliver_data)
 		void deliver_msg(std::shared_ptr<message> deliver_data)
 		 {
-			//std::cout << "Deliver " << deliver_data << std::endl;
 			boost::asio::async_write(socket_,
                                                 boost::asio::buffer(deliver_data->data(), deliver_data->length()),
                                                 strand_.wrap(boost::bind(&session::deliver_done, shared_from_this(),
@@ -120,7 +170,6 @@ class session : public session_interface, public boost::enable_shared_from_this<
 
 		void handle_read_header(const boost::system::error_code &error)
 		{
-			//std::cout << "handle_read_header" << std::endl;
 			if (!error)
 			{
 				read_msg_.decode_header();
@@ -132,13 +181,11 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			else
 			{
 				distributor_.unsubscribe(shared_from_this());
-				//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
 			}
 		}
 
 		void handle_read_body(const boost::system::error_code &error)
 		{
-			//std::cout << "handle_read_body" << std::endl;
 			if (!error)
 			{
 				//std::string s = read_msg_.body();
@@ -157,8 +204,6 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			{
 
 				distributor_.unsubscribe(shared_from_this());
-				//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
-				
 			}
 		}
 
@@ -174,14 +219,12 @@ class session : public session_interface, public boost::enable_shared_from_this<
 					//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
 			}
 		}
-
 		boost::uuids::uuid print_uuid()
 		{
 			return uuid_;
 		}
 
 	boost::asio::strand strand_;
-	chat_message read_chat_message_;
 	tcp::socket socket_;
 	enum { max_length = 1024 };
 	char data_[max_length] = {0};
@@ -193,10 +236,10 @@ class session : public session_interface, public boost::enable_shared_from_this<
 class tcp_server
 {
 	public:
-		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port))
+		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port)), distributor_(io_service)
 		{
 			start_accept();
-			std::cout << "Start accept! Ipv4 on port: " << port << std::endl;
+			BOOST_LOG_TRIVIAL(info) << "Start accept! Ipv4 on port: " << port << std::endl;
 		}
 	private:
 	void start_accept()
@@ -228,6 +271,13 @@ int main(int argument_count, char* argument_vector[])
 {
 	try
 	{
+		//boost::log::add_file_log(keywords::file_name = "server.log");
+
+		logging::core::get()->set_filter
+    	(
+        	logging::trivial::severity >= logging::trivial::info
+    	);
+
 		po::options_description description("Usage: BBInformationServer [Options] --port arg \nAllowed options");
 		description.add_options()("help,h", "Produce help message")("port,p", po::value<int>(), "Set server port");
 
@@ -252,7 +302,7 @@ int main(int argument_count, char* argument_vector[])
 			return 0;
 		}
 
-		std::cout << "Starting server!" << std::endl;
+		BOOST_LOG_TRIVIAL(info) << "Starting server!" << std::endl;
 		boost::thread_group worker_threads;
 		boost::asio::io_service io_service;
 		boost::shared_ptr<tcp_server> server(new tcp_server(io_service, map_of_arguments["port"].as<int>()));
@@ -276,7 +326,6 @@ int main(int argument_count, char* argument_vector[])
 	catch(...) {
         std::cerr << "Exception of unknown type!\n";
     }
-
 return 0;
 }
 
