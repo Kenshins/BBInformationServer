@@ -25,11 +25,12 @@ class distributor : public boost::enable_shared_from_this<distributor>
 
 				distributor(boost::asio::io_service& io_service) : subscriber_(io_service), io_service_(io_service), strand_(io_service)
 				{
-					BOOST_LOG_TRIVIAL(info) << "Distributor started!" << std::endl;
+					BOOST_LOG_TRIVIAL(info) << "Distributor started!";
 				}
 
 				void start()
 				{
+					BOOST_LOG_TRIVIAL(debug) << "Connect to ZeroMQ Publisher";
 					subscriber_.connect("tcp://localhost:5555");
 					subscriber_.set_option(azmq::socket::subscribe(""));
 					subscriber_.async_receive(boost::asio::buffer(read_msg_.data(), message::header_length), strand_.wrap(boost::bind(&distributor::subscriber_read_header, shared_from_this(),
@@ -62,17 +63,14 @@ class distributor : public boost::enable_shared_from_this<distributor>
 			{
 				if (!error)
 				{
-					BOOST_LOG_TRIVIAL(info) << "subscriber_read_header" << std::endl;
+					BOOST_LOG_TRIVIAL(debug) << "subscriber_read_header";
 						read_msg_.decode_header();
-
-						std::cout << read_msg_.body_length() << std::endl;
-
 						subscriber_.async_receive(boost::asio::buffer(read_msg_.body(), read_msg_.body_length()), strand_.wrap(boost::bind(&distributor::subscriber_read_body, shared_from_this(),
 																											 boost::asio::placeholders::error)));
 				}
 				else
 				{
-					BOOST_LOG_TRIVIAL(info) << "subscriber_read_header" << std::endl;
+					BOOST_LOG_TRIVIAL(info) << "subscriber_read_header error";
 				}
 			}
 
@@ -80,7 +78,7 @@ class distributor : public boost::enable_shared_from_this<distributor>
 			{
 				if (!error)
 				{
-					BOOST_LOG_TRIVIAL(info) << "subscriber_read_body" << std::endl;
+					//BOOST_LOG_TRIVIAL(info) << "subscriber_read_body";
 
 					//std::string s = read_msg_.body();
 					//read_chat_message_.ParseFromString(s);
@@ -89,10 +87,11 @@ class distributor : public boost::enable_shared_from_this<distributor>
 					distribute(shared_message);
 					subscriber_.async_receive(boost::asio::buffer(read_msg_.data(), message::header_length), strand_.wrap(boost::bind(&distributor::subscriber_read_header, shared_from_this(),
 																												   boost::asio::placeholders::error)));
+																												
 				}
 				else
 				{
-					BOOST_LOG_TRIVIAL(info) << "subscriber_read_body" << std::endl;
+					BOOST_LOG_TRIVIAL(info) << "subscriber_read_body";
 				}
 			}
 

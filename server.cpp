@@ -63,21 +63,22 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			return socket_;
 		}
 
-		void stop()
+		void stop() override
 		{
+			BOOST_LOG_TRIVIAL(info) << "Session stopped uuid: "  << uuid_;
   			socket_.close();
 		}
 
 		void start()
 		{
-			BOOST_LOG_TRIVIAL(info) << "Session starting uuid: "  << uuid_ << std::endl;
+			BOOST_LOG_TRIVIAL(info) << "Session starting uuid: "  << uuid_;
 			distributor_->subscribe(shared_from_this());
 			boost::asio::async_read(socket_,boost::asio::buffer(read_msg_.data(), message::header_length),
 					strand_.wrap(boost::bind(&session::handle_read_header, shared_from_this(),
 						boost::asio::placeholders::error)));
 		}
 
-		void deliver_msg(std::shared_ptr<message> deliver_data)
+		void deliver_msg(std::shared_ptr<message> deliver_data) override
 		 {
 			boost::asio::async_write(socket_,
                                                 boost::asio::buffer(deliver_data->data(), deliver_data->length()),
@@ -100,6 +101,7 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			else
 			{
 				distributor_->unsubscribe(shared_from_this());
+				BOOST_LOG_TRIVIAL(debug) << __func__ << " Socket canceled unsubscribe! " << this;
 			}
 		}
 
@@ -124,8 +126,8 @@ class session : public session_interface, public boost::enable_shared_from_this<
 			}
 			else
 			{
-
 				distributor_->unsubscribe(shared_from_this());
+				BOOST_LOG_TRIVIAL(debug) << __func__ << " Socket canceled unsubscribe! " << this;
 			}
 		}
 
@@ -133,15 +135,16 @@ class session : public session_interface, public boost::enable_shared_from_this<
 		{
 			if(!error)
 			{
-				//std::cout << "Deliver done! " << uuid_ << std::endl;
+				BOOST_LOG_TRIVIAL(trace) << "Deliver done! " << uuid_;
 			}
 			else
 			{
-					distributor_->unsubscribe(shared_from_this());
-					//std::cout << "Socket cancel unsubscribe! " << this << std::endl;
+				distributor_->unsubscribe(shared_from_this());
+				BOOST_LOG_TRIVIAL(debug) << __func__ << " Socket canceled unsubscribe! " << this;
 			}
 		}
-		boost::uuids::uuid print_uuid()
+
+		boost::uuids::uuid print_uuid() override
 		{
 			return uuid_;
 		}
@@ -158,19 +161,20 @@ class session : public session_interface, public boost::enable_shared_from_this<
 class tcp_server
 {
 	public:
-		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), acceptor_(io_service, tcp::endpoint(tcp::v4(), port)), distributor_(boost::make_shared<distributor>(io_service_))
+		tcp_server(boost::asio::io_service& io_service, int port) : strand_(io_service), io_service_(io_service), 
+		acceptor_(io_service, tcp::endpoint(tcp::v4(), port)), distributor_(boost::make_shared<distributor>(io_service_))
 		{
-			BOOST_LOG_TRIVIAL(info) << "Server starting up!" << std::endl;
+			BOOST_LOG_TRIVIAL(info) << "Server starting up!";
 			distributor_->start();
 			start_accept();
-			BOOST_LOG_TRIVIAL(info) << "Start accept! Ipv4 on port: " << port << std::endl;
+			BOOST_LOG_TRIVIAL(info) << "Start accept! Ipv4 on port: " << port;
 		}
 	private:
 	void start_accept()
 	{
-	BOOST_LOG_TRIVIAL(info) << "Create session for accept " << std::endl;
+	BOOST_LOG_TRIVIAL(info) << "Create session for accept ";
 	boost::shared_ptr<session> new_session(new session(io_service_, distributor_, boost::uuids::random_generator()()));
-	BOOST_LOG_TRIVIAL(info) << "Created session for accept " << std::endl;
+	BOOST_LOG_TRIVIAL(info) << "Created session for accept ";
 	acceptor_.async_accept(new_session->socket(),
 			boost::bind(&tcp_server::handle_accept, this, new_session,
 				boost::asio::placeholders::error));
@@ -197,15 +201,12 @@ int main(int argument_count, char* argument_vector[])
 {
 	try
 	{
-		//boost::log::add_file_log(keywords::file_name = "server.log");
-
-		logging::core::get()->set_filter
-    	(
-        	logging::trivial::severity >= logging::trivial::info
-    	);
-
 		po::options_description description("Usage: BBInformationServer [Options] --port arg \nAllowed options");
-		description.add_options()("help,h", "Produce help message")("port,p", po::value<int>(), "Set server port");
+		description.add_options()	("help,h", "Produce help message")
+									("loglevel,l",po::value<int>()->implicit_value(1)
+									,"Log level 0 for warn/error, l for info (default), 2 for debug, 3 for trace")
+									("logfile,f", po::value<std::string>(), "Set log file name (by default off)")
+									("port,p", po::value<int>(), "Set server port");
 
 		po::variables_map map_of_arguments;
 		po::store(po::parse_command_line(argument_count, argument_vector, description), map_of_arguments);
@@ -217,18 +218,48 @@ int main(int argument_count, char* argument_vector[])
 			return 0;
 		}
 
+		if (map_of_arguments.count("loglevel"))
+		{
+			int log_level = map_of_arguments["loglevel"].as<int>();
+
+			logging::trivial::severity_level level = logging::trivial::warning;
+			if (log_level == 1)
+			{
+				level = logging::trivial::info;
+			}
+			else if (log_level == 2)
+			{
+				level = logging::trivial::debug;
+			}
+			else if (log_level == 3) 
+			{
+				level = logging::trivial::trace;
+			}
+
+			logging::core::get()->set_filter
+    		(
+        		logging::trivial::severity >= level
+    		);
+		}
+
+		if (map_of_arguments.count("logfile"))
+		{
+			std::string filename = map_of_arguments["logfile"].as<std::string>();
+			boost::log::add_file_log(keywords::file_name = filename);
+		}
+
 		if (map_of_arguments.count("port"))
 		{
-			std::cout << "Port was set to: "
-				 << map_of_arguments["port"].as<int>() << ".\n";
+			BOOST_LOG_TRIVIAL(info) << "Port was set to: "
+				 << map_of_arguments["port"].as<int>();
 		}
 		else
 		{
-			std::cout << "Port was not set. Example: BBInformationServer --port 13\n";
+			BOOST_LOG_TRIVIAL(info) << "Port was not set. Example: BBInformationServer --port 13";
 			return 0;
 		}
 
-		BOOST_LOG_TRIVIAL(info) << "Starting server!" << std::endl;
+		BOOST_LOG_TRIVIAL(info) << "Starting server!";
 		boost::thread_group worker_threads;
 		boost::asio::io_service io_service;
 		boost::shared_ptr<tcp_server> server(new tcp_server(io_service, map_of_arguments["port"].as<int>()));
