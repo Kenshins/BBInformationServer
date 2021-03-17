@@ -1,0 +1,3 @@
+message chat_message {
+  required string message_content = 1;
+  }
